@@ -7,6 +7,7 @@
     git config --global user.name "Jangmin Oh"
     git config --global user.email "jangmin.o@gmail.com"
     git config --global credential.helper store
+    git config --global pull.rebase false
 ```
 
 만약 프라이빗 리포등에 연동 작업시 최초 클로닝시
