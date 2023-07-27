@@ -1,0 +1,36 @@
+##
+## QLoRA 사용을 위한 도커
+## 참고: https://huggingface.co/blog/4bit-transformers-bitsandbytes
+## v1.2 (2023-07-27)
+## - https://github.com/artidoro/qlora/commit/7f4e95a68dc076bea9b3a413d2b512eca6d004e5 이상 버전을 수행하기 위한 컴포넌트 설정
+## - llama2 를 지원하기 위함
+## 주요 패키지
+## - 음성 인식 관련, 트랜스포머 등
+
+FROM nvcr.io/nvidia/pytorch:23.05-py3
+
+ARG UID=
+ARG USER_NAME=
+
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /workspace
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
+    apt-get install -y ffmpeg && \
+    apt-get install -y git-lfs && \
+    apt-get install -y gdb && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a user
+RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
+    echo "$USER_NAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USER_NAME && \
+    chmod 0440 /etc/sudoers.d/$USER_NAME
+
+RUN pip install -U datasets evaluate openai tiktoken seqeval safetensors sentencepiece bitsandbytes deepspeed pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab==3.5.3 ipywebrtc ipywidgets && \
+    pip install -U git+https://github.com/huggingface/transformers.git && \
+    pip install -U git+https://github.com/huggingface/peft.git && \
+    pip install -U git+https://github.com/huggingface/accelerate.git

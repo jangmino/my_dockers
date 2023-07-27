@@ -1,0 +1,16 @@
+##
+## QLoRA 사용을 위한 도커
+## 참고: https://huggingface.co/blog/4bit-transformers-bitsandbytes
+## 추가. 2023.07.01
+##     - openai, tiktoken, seqeval
+
+FROM jangminnature/qlora:v1.0-23.05-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /workspace
+
+SHELL ["/bin/bash", "-c"]
+
+
+RUN pip install -U tiktoken seqeval
