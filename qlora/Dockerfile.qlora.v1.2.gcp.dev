@@ -1,0 +1,50 @@
+##
+## QLoRA 사용을 위한 도커
+## 참고: https://huggingface.co/blog/4bit-transformers-bitsandbytes
+## v1.2 (2023-07-27)
+## - https://github.com/artidoro/qlora/commit/7f4e95a68dc076bea9b3a413d2b512eca6d004e5 이상 버전을 수행하기 위한 컴포넌트 설정
+## - llama2 를 지원하기 위함
+## 주요 패키지
+## - 음성 인식 관련, 트랜스포머 등
+
+FROM jangminnature/qlora:v1.2-23.05-py3
+
+ARG DIST
+
+
+WORKDIR /root
+
+# SHELL ["/bin/bash", "-c"]
+
+# Installs google cloud sdk, this is mostly for using gsutil to export model.
+RUN wget -nv \
+    https://dl.google.com/dl/cloudsdk/release/google-cloud-sdk.tar.gz && \
+    mkdir /root/tools && \
+    tar xvzf google-cloud-sdk.tar.gz -C /root/tools && \
+    rm google-cloud-sdk.tar.gz && \
+    /root/tools/google-cloud-sdk/install.sh --usage-reporting=false \
+        --path-update=false --bash-completion=false \
+        --disable-installation-options && \
+    rm -rf /root/.config/* && \
+    ln -s /root/.config /config && \
+    # Remove the backup directory that gcloud creates
+    rm -rf /root/tools/google-cloud-sdk/.install/.backup
+
+# install packges
+RUN pip install gcsfs sentence_transformers
+
+# Path configuration
+ENV PATH $PATH:/root/tools/google-cloud-sdk/bin
+
+# Make sure gsutil will use the default service account
+# dev 버전일 때는 아래를 주석 처리 하자.
+RUN echo '[GoogleCompute]\nservice_account = default' > /etc/boto.cfg
+
+# Copies the trainer code 
+RUN mkdir -p /root/trainer/log
+
+WORKDIR /root/trainer
+# ADD src .
+
+# # Set up the entry point to invoke the trainer.
+# ENTRYPOINT ["python", "main_job.py"]
