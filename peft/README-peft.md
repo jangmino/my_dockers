@@ -23,3 +23,6 @@ jangminnature/peft:v1.1dev-torch2.1-cu118
         cd AutoAWQ
         pip install -v .
         ```
+
+TODO
+- wandb 설치가 누락되었다 설치할 것 (2023-10-08)
