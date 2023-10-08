@@ -1,5 +1,6 @@
 ##
 ## PEFT를 제대로 사용하기 위한 도커 (PEFT, QLoRA, Auto-GPTQ, ...)
+## 현재 (2023-10-06 기준 cuda 11.8 에서만 auto-gptq 등이 원활히 동작함)
 ## 참고: https://huggingface.co/blog/4bit-transformers-bitsandbytes
 ## v1.3 (2023-09-07)
 ## - https://github.com/artidoro/qlora/commit/7f4e95a68dc076bea9b3a413d2b512eca6d004e5 이상 버전을 수행하기 위한 컴포넌트 설정
@@ -7,7 +8,7 @@
 ## 주요 패키지
 ## - 음성 인식 관련, 트랜스포머 등
 
-FROM nvcr.io/nvidia/pytorch:23.08-py3
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
 
 ARG UID=
 ARG USER_NAME=
@@ -23,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
     apt-get install -y ffmpeg && \
     apt-get install -y git-lfs && \
     apt-get install -y gdb && \
+    apt-get install wget && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a user
@@ -30,10 +32,12 @@ RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
     echo "$USER_NAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USER_NAME && \
     chmod 0440 /etc/sudoers.d/$USER_NAME
 
-# pip install -U git+https://github.com/PanQiWei/AutoGPTQ.git@v0.4.2 && \ 
-
 RUN pip install -U git+https://github.com/huggingface/transformers.git && \
     pip install -U git+https://github.com/huggingface/peft.git && \
     pip install -U git+https://github.com/huggingface/accelerate.git && \
     pip install -U git+https://github.com/huggingface/optimum.git && \
-    pip install -U datasets evaluate openai tiktoken seqeval safetensors sentencepiece bitsandbytes deepspeed pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab==3.5.3 ipywebrtc ipywidgets text-generation 
+    pip install -U datasets evaluate openai tiktoken seqeval safetensors sentencepiece bitsandbytes deepspeed pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab==3.5.3 ipywebrtc ipywidgets trl
+
+# RUN git clone https://github.com/PanQiWei/AutoGPTQ.git && cd AutoGPTQ && pip install -e . && cd ..
+
+# RUN git clone https://github.com/casper-hansen/AutoAWQ && cd AutoAWQ && pip install -e .
