@@ -1,5 +1,11 @@
 # PEFT 도커 제작 히스토리
 
+## 2023-11-30
+
+업데이트
+- Diffusers
+- Transformers 관련 업데이트 반영 (awq, gptq 등에서 cuda12.1 지원하게 됨)
+
 ## 2023-10-08
 
 jangminnature/peft:v1.1dev-torch2.1-cu118
