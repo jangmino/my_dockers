@@ -4,15 +4,15 @@
 ## git 관련
 
 ```bash
-    git config --global user.name "Jangmin Oh"
-    git config --global user.email "jangmin.o@gmail.com"
-    git config --global credential.helper store
-    git config --global pull.rebase false
+git config --global user.name "Jangmin Oh"
+git config --global user.email "jangmin.o@gmail.com"
+git config --global credential.helper store
+git config --global pull.rebase false
 ```
 
 만약 프라이빗 리포등에 연동 작업시 최초 클로닝시
 ```
-    git clone https://토큰@github/리포주소
+git clone https://토큰@github/리포주소
 ```
 - 토큰 -> 실제 인증 토큰으로 교체
 - 리포주소 -> 실제 리포 주소로 교체
