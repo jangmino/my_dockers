@@ -1,7 +1,10 @@
 #!/bin/bash
 
+# 최신 버전: 2024-02-22
+docker build -t jangminnature/peft:v1.4dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.5dev ./
+
 # 최신 버전: 2024-01-18
-docker build -t jangminnature/peft:v1.4dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.4dev ./
+# docker build -t jangminnature/peft:v1.4dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.4dev ./
 
 # 최신 버전: 2024-01-18
 # docker build -t jangminnature/peft:v1.3dev-torch2.1-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.3dev ./
