@@ -1,7 +1,10 @@
 #!/bin/bash
 
+# 최신 버전: 2024-05-17
+docker build -t jangminnature/mlops:v1.0dev-torch2.3-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.0dev ./
+
 # 최신 버전: 2024-04-21
-docker build -t jangminnature/peft:v1.7dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.7dev ./
+#docker build -t jangminnature/peft:v1.7dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.7dev ./
 
 # 최신 버전: 2024-03-14
 # docker build -t jangminnature/peft:v1.6dev-torch2.2-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.peft.v1.6dev ./
