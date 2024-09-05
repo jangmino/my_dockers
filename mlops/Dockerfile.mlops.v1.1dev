@@ -1,0 +1,34 @@
+##
+## MLOPS v1.1
+## v1.0.dev (2024-07-05)
+## 주요 패키지
+## - 언어 모델, 음성 인식 관련, 트랜스포머, 디퓨저 등
+
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
+
+ARG UID=
+ARG USER_NAME=
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ENV CUDA_HOME=/usr/local/cuda
+
+WORKDIR /workspace
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
+    apt-get install -y ffmpeg && \
+    apt-get install -y git-lfs && \
+    apt-get install -y gdb && \
+    apt-get install wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a user
+RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
+    echo "$USER_NAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USER_NAME && \
+    chmod 0440 /etc/sudoers.d/$USER_NAME
+
+RUN pip install transformers accelerate diffusers peft datasets evaluate webdataset ftfy optimum autoawq auto-gptq trl gcsfs seqeval safetensors sentencepiece bitsandbytes deepspeed wandb einops && \
+    pip install openai tiktoken pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab>=3.5.3 ipywebrtc ipywidgets gekko && \
+    pip install flash-attn --no-build-isolation
