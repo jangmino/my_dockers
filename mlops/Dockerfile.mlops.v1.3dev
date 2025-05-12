@@ -31,4 +31,5 @@ RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
 
 RUN pip install transformers accelerate diffusers peft datasets evaluate webdataset ftfy optimum autoawq auto-gptq trl gcsfs seqeval safetensors sentencepiece bitsandbytes deepspeed wandb einops && \
     pip install openai tiktoken pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab>=3.5.3 ipywebrtc ipywidgets gekko && \
-    pip install flash-attn --no-build-isolation
+    pip install flash-attn --no-build-isolation && \
+    pip install pandas-ta python-binance

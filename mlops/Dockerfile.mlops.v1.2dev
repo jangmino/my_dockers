@@ -4,7 +4,7 @@
 ## 주요 패키지
 ## - 언어 모델, 음성 인식 관련, 트랜스포머, 디퓨저 등
 
-FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
 
 ARG UID=
 ARG USER_NAME=
