@@ -1,10 +1,10 @@
 ##
-## MLOPS v1.2
-## v1.2.dev (2024-09-02)
+## MLOPS v1.3
+## v1.3.dev (2025-03-20)
 ## 주요 패키지
 ## - 언어 모델, 음성 인식 관련, 트랜스포머, 디퓨저 등
 
-FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-devel
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 
 ARG UID=
 ARG USER_NAME=
@@ -31,4 +31,5 @@ RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
 
 RUN pip install transformers accelerate diffusers peft datasets evaluate webdataset ftfy optimum autoawq auto-gptq trl gcsfs seqeval safetensors sentencepiece bitsandbytes deepspeed wandb einops && \
     pip install openai tiktoken pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab>=3.5.3 ipywebrtc ipywidgets gekko && \
-    pip install flash-attn --no-build-isolation
+    pip install flash-attn --no-build-isolation && \
+    pip install pandas-ta python-binance
