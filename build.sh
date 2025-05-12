@@ -1,8 +1,13 @@
 #!/bin/bash
 
-# 최신 버전: 2024-09-02
-docker build -t jangminnature/mlops:v1.2dev-torch2.4-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.2dev ./
+# 최신 버전: 2025-05-12
+docker build -t jangminnature/mlops:v1.4dev-torch2.7-cu128 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.4dev ./
 
+# 최신 버전: 2025-03-20
+#docker build -t jangminnature/mlops:v1.3dev-torch2.6-cu126 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.3dev ./
+
+# 최신 버전: 2024-09-02
+# docker build -t jangminnature/mlops:v1.2dev-torch2.4-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.2dev ./
 
 # 최신 버전: 2024-07-05
 # docker build -t jangminnature/mlops:v1.1dev-torch2.3-cu121 --build-arg UID=$UID --build-arg USER_NAME=$USER -f Dockerfile.mlops.v1.1dev ./
