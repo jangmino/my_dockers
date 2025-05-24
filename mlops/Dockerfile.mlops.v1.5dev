@@ -1,10 +1,11 @@
 ##
 ## MLOPS v1.5
-## v1.4.dev (2025-05-24)
+## v1.4.dev (2025-05-25)
 ## 주요 패키지
 ## - 언어 모델, 음성 인식 관련, 트랜스포머, 디퓨저 등
 
 FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ARG UID=
 ARG USER_NAME=
