@@ -22,7 +22,6 @@ RUN apt update && apt install -y --no-install-recommends sudo && \
     apt install -y git-lfs && \
     apt install -y gdb && \
     apt install -y screen curl vim wget && \
-    curl -LsSf https://astral.sh/uv/install.sh | sh && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a user
