@@ -4,7 +4,7 @@
 ## 주요 패키지
 ## - 언어 모델, 음성 인식 관련, 트랜스포머, 디퓨저 등
 
-FROM pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ARG UID=
@@ -31,7 +31,7 @@ RUN adduser $USER_NAME -u $UID --quiet --gecos "" --disabled-password && \
     chmod 0440 /etc/sudoers.d/$USER_NAME
 
 
-RUN pip install transformers accelerate diffusers peft datasets evaluate webdataset ftfy optimum autoawq auto-gptq trl gcsfs seqeval safetensors sentencepiece bitsandbytes deepspeed wandb einops unsloth && \
+RUN pip install transformers accelerate diffusers peft datasets evaluate webdataset ftfy optimum autoawq auto-gptq trl gcsfs seqeval safetensors sentencepiece bitsandbytes deepspeed wandb einops && \
     pip install google-genai openai anthropic tiktoken pillow timm pandas scipy scikit-learn librosa jiwer gradio openpyxl XlsxWriter jupyterlab ipywebrtc ipywidgets gekko && \
     pip install flash-attn --no-build-isolation && \
-    pip install pandas-ta python-binance
+    pip install python-binance
