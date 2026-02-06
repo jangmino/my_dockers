@@ -1,0 +1,95 @@
+groups:
+  - name: node_alerts
+    rules:
+      # (1) 노드 자체가 죽었거나 exporter가 죽음
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node exporter down"
+          description: "node_exporter is down for more than 1 minute."
+
+      # (2) 디스크 여유 공간 부족 (10% 미만)
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|aufs"} /
+           node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|aufs"}) < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space low (<10% free)"
+          description: "Filesystem {{ $labels.mountpoint }} is below 10% free on {{ $labels.instance }}."
+
+      # (3) 메모리 사용률 높음 (95% 이상)
+      - alert: MemoryUsageHigh
+        expr: |
+          1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage high (>95%)"
+          description: "Memory usage is above 95% on {{ $labels.instance }}."
+
+  - name: container_alerts
+    rules:
+      # (4) cAdvisor 다운
+      - alert: CadvisorDown
+        expr: up{job="cadvisor"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "cAdvisor down"
+          description: "cAdvisor is down for more than 1 minute."
+
+      # (5) 컨테이너 재시작 급증(5분 동안 3회 이상)
+      - alert: ContainerRestartStorm
+        expr: increase(container_start_time_seconds[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restart storm"
+          description: "A container restarted more than 3 times in 5 minutes (check containers)."
+
+  - name: gpu_alerts
+    rules:
+      # (6) DCGM exporter 다운
+      - alert: DcgmExporterDown
+        expr: up{job="dcgm"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DCGM exporter down"
+          description: "dcgm-exporter is down for more than 1 minute."
+
+      # (7) GPU 온도 높음 (기본 85C)
+      # dcgm-exporter 버전에 따라 메트릭명이 다를 수 있어.
+      # 보통 아래 메트릭 중 하나가 존재한다:
+      # - DCGM_FI_DEV_GPU_TEMP
+      # - dcgm_gpu_temp
+      - alert: GpuTemperatureHigh
+        expr: max(DCGM_FI_DEV_GPU_TEMP) > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU temperature high (>85C)"
+          description: "GPU temperature is high. Investigate cooling/load."
+
+      # (8) GPU 메모리 사용률 높음 (95% 이상)
+      # 대시보드에서 확인되는 메트릭에 따라 조정 가능
+      - alert: GpuMemoryHigh
+        expr: |
+          (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory usage high (>95%)"
+          description: "GPU memory usage is above 95%."

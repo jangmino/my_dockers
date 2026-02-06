@@ -1,0 +1,94 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mon_prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "9090:9090"
+    volumes:
+      - /opt/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+      - /opt/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mon_grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # 최초 접속: admin / admin  (접속 후 변경 권장)
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - /opt/monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: mon_node_exporter
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.rootfs=/host
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro,rslave
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    container_name: mon_cadvisor
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+
+  dcgm_exporter:
+    image: nvidia/dcgm-exporter:latest
+    container_name: mon_dcgm_exporter
+    restart: unless-stopped
+    ports:
+      - "9400:9400"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: -1
+              capabilities: ["gpu"]
+
+    cap_add:
+      - SYS_ADMIN
+    # 만약 여기서도 권한/접근 오류가 나면 아래 한 줄로 대체(또는 추가)하면 거의 해결됨
+    # privileged: true
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: mon_alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - /opt/monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
