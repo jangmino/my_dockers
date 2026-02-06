@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # =========================
-# teamctl-xfs.sh (FINAL)
+# teamctl-xfs.sh
 # - XFS project quota based team workspace management
-# - /workspace and /home/<team> share the same quota-controlled volume
+# - Compose file based container provisioning
 # =========================
 
 BASE_DIR="/opt/mlops"
@@ -61,6 +61,7 @@ team_num_from_name(){
   local digits
   digits="$(echo "${team}" | sed -n 's/.*\([0-9][0-9]*\)$/\1/p')"
   if [[ -n "${digits}" ]]; then
+    # strip leading zeros safely
     echo "$((10#${digits}))"
   else
     echo ""
@@ -142,7 +143,10 @@ compose_remove_team(){
 }
 
 compose_append_team_block(){
-  local block="$1"
+  local team="$1"
+  local block="$2"
+
+  # Ensure file ends with newline
   printf "\n%s\n" "${block}" >> "${COMPOSE_FILE}"
 }
 
@@ -229,6 +233,7 @@ add_key(){
 
   local f="${SSH_DIR}/${team}/authorized_keys"
 
+  # Avoid duplicates
   if grep -qF "${key}" "${f}" 2>/dev/null; then
     log "Key already present for ${team}."
   else
@@ -256,15 +261,20 @@ backup_keys(){
 # XFS project quota
 # -------------------------
 ensure_xfs_prjquota(){
+  # lightweight checks (avoid false negatives)
   command -v xfs_quota >/dev/null 2>&1 || die "xfs_quota not found. Install xfsprogs."
   [[ -d "${DATA_ROOT}" ]] || die "${DATA_ROOT} not found."
+  # Ensure /data is mounted
   mountpoint -q "${DATA_ROOT}" || die "${DATA_ROOT} is not a mountpoint. Mount XFS disk to ${DATA_ROOT} first."
-
+  # Confirm filesystem type is xfs
   local fstype
   fstype="$(stat -f -c %T "${DATA_ROOT}")"
   [[ "${fstype}" == "xfs" ]] || die "${DATA_ROOT} is not XFS (stat reports ${fstype})."
 
-  xfs_quota -x -c "state" "${DATA_ROOT}" >/dev/null 2>&1 || die "xfs_quota state failed. Is prjquota enabled on ${DATA_ROOT} mount?"
+  # Best-effort state check
+  if ! xfs_quota -x -c "state" "${DATA_ROOT}" >/dev/null 2>&1; then
+    die "xfs_quota state failed. Is prjquota enabled on ${DATA_ROOT} mount? (fstab: ... xfs ... prjquota)"
+  fi
 }
 
 ensure_proj_files(){
@@ -277,6 +287,7 @@ ensure_project_mapping(){
   ensure_xfs_prjquota
   ensure_proj_files
 
+  # /etc/projid: team:12001
   if ! grep -qE "^${team}:" "${PROJID_FILE}"; then
     echo "${team}:${projid}" >> "${PROJID_FILE}"
   else
@@ -285,6 +296,7 @@ ensure_project_mapping(){
     [[ -z "${cur}" || "${cur}" == "${projid}" ]] || die "projid mismatch for ${team} (have ${cur}, want ${projid})"
   fi
 
+  # /etc/projects: 12001:/data/teams/team01
   if ! grep -qE "^${projid}:" "${PROJECTS_FILE}"; then
     echo "${projid}:${path}" >> "${PROJECTS_FILE}"
   else
@@ -293,6 +305,7 @@ ensure_project_mapping(){
     [[ -z "${curp}" || "${curp}" == "${path}" ]] || die "project id ${projid} already mapped to ${curp} (want ${path})"
   fi
 
+  # Activate
   xfs_quota -x -c "project -s ${team}" "${DATA_ROOT}" >/dev/null
 }
 
@@ -309,8 +322,10 @@ report_team_quota(){
 purge_team_xfs_project(){
   local team="$1" gid="$2"
   ensure_proj_files
+  # clear quota
   xfs_quota -x -c "limit -p bsoft=0 bhard=0 ${team}" "${DATA_ROOT}" >/dev/null 2>&1 || true
 
+  # remove mapping lines
   awk -F: -v id="${gid}" '$1!=id{print}' "${PROJECTS_FILE}" > "${PROJECTS_FILE}.tmp" && mv "${PROJECTS_FILE}.tmp" "${PROJECTS_FILE}"
   awk -F: -v t="${team}" '$1!=t{print}' "${PROJID_FILE}" > "${PROJID_FILE}.tmp" && mv "${PROJID_FILE}.tmp" "${PROJID_FILE}"
 }
@@ -336,7 +351,6 @@ prepare_team_storage(){
 
 # -------------------------
 # Compose team block generator
-# IMPORTANT: /home/<team> is mapped to the same volume as /workspace
 # -------------------------
 render_team_block(){
   local team="$1" image="$2" gpu="$3" port="$4" uid="$5" gid="$6"
@@ -397,7 +411,6 @@ Core:
 Notes:
 - Requires /data to be XFS mounted with prjquota (fstab option: prjquota).
 - Compose file is ${COMPOSE_FILE}
-- /home/<team> shares the same volume as /workspace (quota applies to both).
 EOF
 }
 
@@ -452,15 +465,19 @@ cmd_create(){
   [[ "${gid}" =~ ^[0-9]+$ ]] || die "GID must be numeric."
   [[ "${port}" =~ ^[0-9]+$ ]] || die "Port must be numeric."
 
+  # Storage + quota
   prepare_team_storage "${team}" "${uid}" "${gid}" "${size}" "${soft}"
+
+  # SSH dir
   ensure_team_ssh_dir "${team}" "${gid}"
 
+  # Compose block
   local block
   block="$(render_team_block "${team}" "${image}" "${gpu}" "${port}" "${uid}" "${gid}")"
-  compose_append_team_block "${block}"
+  compose_append_team_block "${team}" "${block}"
 
   log "Created team ${team}: gpu=${gpu}, port=${port}, uid=${uid}, gid=${gid}, soft=${soft}, hard=${size}"
-  log "Workspace: ${TEAMS_DIR}/${team}  (also mounted to /home/${team})"
+  log "Workspace: ${TEAMS_DIR}/${team}"
   log "SSH keys:  ${SSH_DIR}/${team}/authorized_keys"
   log "Next: docker compose -f ${COMPOSE_FILE} up -d ${team}"
 }
@@ -483,11 +500,12 @@ cmd_add_key(){
   done
   [[ -n "${key}" ]] || die "--key \"ssh-...\" required."
 
+  # read gid from compose
   read -r uid gid port gpu <<< "$(get_team_env_from_compose "${team}")"
   [[ -n "${gid}" ]] || die "Could not determine GID from compose for ${team}"
 
   add_key "${team}" "${key}" "${gid}"
-  log "Done."
+  log "Done. (If ssh is running, no restart needed. Container restart is OK if desired.)"
 }
 
 cmd_fix_perms(){
@@ -588,9 +606,10 @@ cmd_audit(){
     local sshd="${SSH_DIR}/${team}"
     local ak="${sshd}/authorized_keys"
 
-    [[ -d "${sshd}" ]] && ssh_ok="YES"
-    [[ -f "${ak}" ]] && ak_ok="YES"
+    if [[ -d "${sshd}" ]]; then ssh_ok="YES"; fi
+    if [[ -f "${ak}" ]]; then ak_ok="YES"; fi
 
+    # numeric owner checks (robust even if group name missing)
     local downer fowner
     downer="$(stat -c "%u:%g" "${sshd}" 2>/dev/null || echo "?")"
     fowner="$(stat -c "%u:%g" "${ak}" 2>/dev/null || echo "?")"
@@ -603,6 +622,17 @@ cmd_audit(){
     fperm="$(stat -c "%a" "${ak}" 2>/dev/null || echo "?")"
     if [[ "${dperm}" != "750" ]]; then notes+="SSH_DIR_PERM(${dperm}) "; fi
     if [[ "${fperm}" != "640" ]]; then notes+="AK_PERM(${fperm}) "; fi
+
+    # quota check (best-effort)
+    if [[ -d "${TEAMS_DIR}/${team}" ]]; then
+      if xfs_quota -x -c "report -p -n" "${DATA_ROOT}" >/dev/null 2>&1; then
+        true
+      else
+        notes+="NO_XFS_QUOTA "
+      fi
+    else
+      notes+="NO_WORKSPACE "
+    fi
 
     printf "%-8s %-4s %-6s %-6s %-6s %-10s %-6s %-s\n" \
       "${team}" "${gpu:-?}" "${port:-?}" "${uid:-?}" "${gid:-?}" "${ssh_ok}" "${ak_ok}" "${notes}"
@@ -639,6 +669,7 @@ cmd_resize(){
   ensure_project_mapping "${team}" "${gid}" "${TEAMS_DIR}/${team}"
 
   if [[ -z "${soft}" ]]; then
+    # simple heuristic: hard-10G if numeric G
     soft="${size}"
     if [[ "${size}" =~ ^([0-9]+)G$ ]]; then
       local n="${BASH_REMATCH[1]}"
@@ -660,6 +691,7 @@ cmd_reset(){
   [[ -n "${team}" ]] || die "TEAM_NAME required."
   compose_has_team "${team}" || die "Team not found in compose: ${team}"
 
+  # Stop + remove container only. Keep data.
   docker compose -f "${COMPOSE_FILE}" stop "${team}" >/dev/null 2>&1 || true
   docker compose -f "${COMPOSE_FILE}" rm -s -f "${team}" >/dev/null 2>&1 || true
   log "Reset container for ${team}. Data preserved."
@@ -683,20 +715,25 @@ cmd_remove(){
     esac
   done
 
+  # Stop + remove container
   docker compose -f "${COMPOSE_FILE}" stop "${team}" >/dev/null 2>&1 || true
   docker compose -f "${COMPOSE_FILE}" rm -s -f "${team}" >/dev/null 2>&1 || true
 
+  # read gid before removing compose block (for purge)
   local uid gid port gpu
   read -r uid gid port gpu <<< "$(get_team_env_from_compose "${team}")"
 
+  # Remove compose block
   compose_remove_team "${team}"
   log "Removed ${team} from compose."
 
   if [[ "${purge}" == "true" ]]; then
+    # backup keys before purge (best-effort)
     if [[ -f "${SSH_DIR}/${team}/authorized_keys" ]]; then
       backup_keys "${team}" "${SSH_BACKUP_DIR}" || true
     fi
 
+    # remove quota mapping
     if [[ -n "${gid:-}" ]]; then
       purge_team_xfs_project "${team}" "${gid}" || true
     fi
