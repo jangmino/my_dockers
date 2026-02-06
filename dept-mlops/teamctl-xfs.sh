@@ -122,8 +122,8 @@ compose_has_team(){
 list_teams_from_compose(){
   # list service names (2-space indent under services:)
   awk '
-    /^services:/ {in=1; next}
-    in==1 && /^[ ]{2}[A-Za-z0-9._-]+:/ {
+    /^services:/ {in_services=1; next}
+    in_services==1 && /^[ ]{2}[A-Za-z0-9._-]+:/ {
       s=$0; sub(/^  /,"",s); sub(/:.*/,"",s); print s
     }
   ' "${COMPOSE_FILE}"
