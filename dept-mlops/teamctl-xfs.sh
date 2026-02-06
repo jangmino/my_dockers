@@ -366,6 +366,7 @@ render_team_block(){
       - "${port}:22"
     volumes:
       - ${TEAMS_DIR}/${team}:/workspace
+      - ${TEAMS_DIR}/${team}:/home/${team}
       - ${SSH_DIR}/${team}:/ssh-keys:ro
     environment:
       USER_NAME: ${team}
