@@ -210,6 +210,20 @@ ensure_team_ssh_dir(){
   fix_team_ssh_perms "${team}" "${gid}"
 }
 
+ensure_team_hostkeys_dir() {
+  local team="${1:?team required}"
+  local hk_dir="${SSH_DIR}/${team}/hostkeys"
+
+  mkdir -p "${hk_dir}"
+
+  # ssh host keys는 root만 쓰는 게 정석
+  chown root:root "${hk_dir}"
+  chmod 700 "${hk_dir}"
+
+  # (선택) authorized_keys는 팀 gid로 쓰는 구조라면 기존 로직 유지
+  # hostkeys는 root만 접근하는 게 좋다.
+}
+
 fix_team_ssh_perms(){
   local team="$1" gid="$2"
   local d="${SSH_DIR}/${team}"
@@ -354,6 +368,7 @@ render_team_block(){
       - ${TEAMS_DIR}/${team}:/workspace
       - ${TEAMS_DIR}/${team}:/home/${team}
       - ${SSH_DIR}/${team}:/ssh-keys:ro
+      - ${SSH_DIR}/${team}/hostkeys:/etc/ssh/hostkeys:rw
     environment:
       USER_NAME: ${team}
       PUID: "${uid}"
@@ -393,6 +408,7 @@ Core:
   sudo $0 resize TEAM_NAME --size 500G [--soft 490G]
   sudo $0 reset TEAM_NAME
   sudo $0 remove TEAM_NAME [--purge-data]
+  sudo $0 set-image TEAM_NAME image:tag
 
 Notes:
 - Requires /data to be XFS mounted with prjquota (fstab option: prjquota).
@@ -454,6 +470,7 @@ cmd_create(){
 
   prepare_team_storage "${team}" "${uid}" "${gid}" "${size}" "${soft}"
   ensure_team_ssh_dir "${team}" "${gid}"
+  ensure_team_hostkeys_dir "${team}"
 
   local block
   block="$(render_team_block "${team}" "${image}" "${gpu}" "${port}" "${uid}" "${gid}")"
@@ -712,6 +729,78 @@ cmd_remove(){
   fi
 }
 
+cmd_set_image() {
+  local team="${1:-}"
+  local image="${2:-}"
+  local compose="${COMPOSE_FILE:-/opt/mlops/compose.yaml}"
+
+  if [[ -z "$team" || -z "$image" ]]; then
+    echo "Usage: $0 set-image TEAM image:tag"
+    return 2
+  fi
+  if [[ ! -f "$compose" ]]; then
+    echo "ERROR: compose file not found: $compose"
+    return 1
+  fi
+
+  # Update only the `image:` line inside the target service block:
+  # services:
+  #   team01:
+  #     image: ...
+  #   team02:
+  #     image: ...
+  local tmp
+  tmp="$(mktemp)"
+
+  awk -v TEAM="$team" -v NEWIMG="$image" '
+    BEGIN { in_services=0; in_team=0; updated=0 }
+
+    # Enter services section
+    /^services:[[:space:]]*$/ { in_services=1; print; next }
+
+    # If we are in services, detect service headers at indent=2: "  name:"
+    in_services && match($0, /^[[:space:]]{2}([A-Za-z0-9_.-]+):[[:space:]]*$/, m) {
+      # leaving previous team block if any
+      in_team = (m[1] == TEAM)
+      print
+      next
+    }
+
+    # Replace image line at indent=4 inside target team block
+    in_services && in_team && $0 ~ /^[[:space:]]{4}image:[[:space:]]*/ {
+      print "    image: " NEWIMG
+      updated=1
+      next
+    }
+
+    { print }
+
+    END {
+      if (updated == 0) {
+        # exit code 3: team block or image line not found
+        exit 3
+      }
+    }
+  ' "$compose" > "$tmp"
+
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    sudo mv "$tmp" "$compose"
+    echo "Updated image for ${team} -> ${image}"
+    echo "Next: sudo docker compose -f ${compose} up -d --no-deps --force-recreate ${team}"
+    return 0
+  elif [[ $rc -eq 3 ]]; then
+    rm -f "$tmp"
+    echo "ERROR: Could not find service '${team}' or its image line in ${compose}"
+    echo "Tip: check that '${team}' exists under 'services:' and has an 'image:' line."
+    return 1
+  else
+    rm -f "$tmp"
+    echo "ERROR: Failed to update compose (awk exit $rc)"
+    return 1
+  fi
+}
+
 # -------------------------
 # Main
 # -------------------------
@@ -730,6 +819,7 @@ main(){
     resize) cmd_resize "$@";;
     reset) cmd_reset "$@";;
     remove) cmd_remove "$@";;
+    set-image) cmd_set_image "${1:-}" "${2:-}" ;;
     ""|-h|--help|help) usage;;
     *) die "Unknown command: ${cmd}. Use --help.";;
   esac

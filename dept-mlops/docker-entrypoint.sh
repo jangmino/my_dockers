@@ -38,10 +38,30 @@ fi
 # 3) workspace 권한 정리(실패해도 진행)
 chown -R "${USER_NAME}:${PGID}" /workspace 2>/dev/null || true
 
-# 4) sshd host key 생성(없을 때만)
-if [[ ! -f /etc/ssh/ssh_host_ed25519_key ]]; then
-  ssh-keygen -A >/dev/null 2>&1 || true
+# 4) sshd host key 영구화 (/etc/ssh/hostkeys 를 사용)
+HOSTKEY_DIR="/etc/ssh/hostkeys"
+mkdir -p "${HOSTKEY_DIR}"
+chmod 700 "${HOSTKEY_DIR}"
+
+# 키가 없으면 최초 1회 생성 (이 디렉터리가 호스트에 마운트되면 재생성돼도 유지됨)
+if [[ ! -f "${HOSTKEY_DIR}/ssh_host_ed25519_key" ]]; then
+  echo "[sshd] generating persistent host keys in ${HOSTKEY_DIR}"
+  ssh-keygen -t ed25519 -f "${HOSTKEY_DIR}/ssh_host_ed25519_key" -N "" >/dev/null
 fi
+
+if [[ ! -f "${HOSTKEY_DIR}/ssh_host_rsa_key" ]]; then
+  ssh-keygen -t rsa -b 4096 -f "${HOSTKEY_DIR}/ssh_host_rsa_key" -N "" >/dev/null
+fi
+
+chmod 600 "${HOSTKEY_DIR}/ssh_host_"*_key 2>/dev/null || true
+chmod 644 "${HOSTKEY_DIR}/ssh_host_"*_key.pub 2>/dev/null || true
+
+# sshd가 위 키를 쓰도록 HostKey 라인 보장(중복 추가 방지)
+SSHD_CONFIG="/etc/ssh/sshd_config"
+grep -q '^HostKey /etc/ssh/hostkeys/ssh_host_ed25519_key$' "${SSHD_CONFIG}" \
+  || echo "HostKey /etc/ssh/hostkeys/ssh_host_ed25519_key" >> "${SSHD_CONFIG}"
+grep -q '^HostKey /etc/ssh/hostkeys/ssh_host_rsa_key$' "${SSHD_CONFIG}" \
+  || echo "HostKey /etc/ssh/hostkeys/ssh_host_rsa_key" >> "${SSHD_CONFIG}"
 
 # 5) sudo 정책
 SUDOERS_FILE="/etc/sudoers.d/${USER_NAME}"
