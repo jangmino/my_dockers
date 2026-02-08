@@ -38,6 +38,7 @@ NFS_CONTAINER_PATH_DEFAULT="/nfs/team"  # inside container
 NFS_HOST_DEFAULT="210.125.91.94"
 NFS_SSH_USER_DEFAULT="nfsadmin"
 NFS_SSH_PORT_DEFAULT="22"
+NFS_SSH_KEY_DEFAULT="/opt/mlops/keys/nfsctl_ed25519"
 NFSCTL_REMOTE_PATH_DEFAULT="/opt/nfs/nfsctl.sh"
 
 PROJECTS_FILE="/etc/projects"
@@ -367,7 +368,13 @@ ensure_nfs_mount(){
 ssh_nfs(){
   local cmd="$1"
   need_cmd ssh
+  local key_opt=()
+  if [[ -n "${NFS_SSH_KEY:-}" ]]; then
+    key_opt=(-i "${NFS_SSH_KEY}")
+  fi
+
   ssh -p "${NFS_SSH_PORT}" \
+    "${key_opt[@]}" \
     -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new \
     -o ConnectTimeout=5 \
@@ -470,7 +477,7 @@ Core:
   sudo $0 create TEAM --gpu N [--image IMG] [--port P] [--uid U] [--gid G] \
     [--size 300G] [--soft 290G] \
     [--nfs] [--nfs-size 1000G] [--nfs-soft 950G] \
-    [--nfs-host HOST] [--nfs-user USER] [--nfs-port 22] [--nfsctl /opt/nfs/nfsctl.sh] \
+    [--nfs-host HOST] [--nfs-user USER] [--nfs-port 22] [--nfs-key /path/to/key] [--nfsctl /opt/nfs/nfsctl.sh] \
     [--nfs-mount /mnt/nfs/teams] [--nfs-path /nfs/team]
   sudo $0 add-key TEAM --key "ssh-ed25519 AAAA... team01/user"
   sudo $0 fix-perms TEAM
@@ -518,6 +525,7 @@ cmd_create(){
   local nfs_host="${NFS_HOST_DEFAULT}"
   local nfs_user="${NFS_SSH_USER_DEFAULT}"
   local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
   local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
   local nfs_mount="${NFS_MOUNT_DEFAULT}"
   local nfs_path="${NFS_CONTAINER_PATH_DEFAULT}"
@@ -538,6 +546,7 @@ cmd_create(){
       --nfs-host) nfs_host="${2:-}"; shift 2;;
       --nfs-user) nfs_user="${2:-}"; shift 2;;
       --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
       --nfsctl) nfsctl="${2:-}"; shift 2;;
       --nfs-mount) nfs_mount="${2:-}"; shift 2;;
       --nfs-path) nfs_path="${2:-}"; shift 2;;
@@ -577,6 +586,7 @@ cmd_create(){
     NFS_HOST="${nfs_host}"
     NFS_SSH_USER="${nfs_user}"
     NFS_SSH_PORT="${nfs_port}"
+    NFS_SSH_KEY="${nfs_key}"
     NFSCTL_REMOTE_PATH="${nfsctl}"
     NFS_MOUNT="${nfs_mount}"
     NFS_CONTAINER_PATH="${nfs_path}"
@@ -619,6 +629,7 @@ cmd_nfs_resize(){
   local nfs_host="${NFS_HOST_DEFAULT}"
   local nfs_user="${NFS_SSH_USER_DEFAULT}"
   local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
   local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
   local nfs_mount="${NFS_MOUNT_DEFAULT}"
 
@@ -629,6 +640,7 @@ cmd_nfs_resize(){
       --nfs-host) nfs_host="${2:-}"; shift 2;;
       --nfs-user) nfs_user="${2:-}"; shift 2;;
       --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
       --nfsctl) nfsctl="${2:-}"; shift 2;;
       --nfs-mount) nfs_mount="${2:-}"; shift 2;;
       *) die "Unknown arg: $1";;
@@ -645,6 +657,7 @@ cmd_nfs_resize(){
   NFS_HOST="${nfs_host}"
   NFS_SSH_USER="${nfs_user}"
   NFS_SSH_PORT="${nfs_port}"
+  NFS_SSH_KEY="${nfs_key}"
   NFSCTL_REMOTE_PATH="${nfsctl}"
   NFS_MOUNT="${nfs_mount}"
 
