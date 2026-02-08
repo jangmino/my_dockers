@@ -2,7 +2,8 @@
 
 > PRO 6000×4 GPU 서버 기준
 >
-> 새 머신을 받았을 때 OS 설치 이후 수행하는 전체 초기화 절차입니다.
+> 새 딥러닝 머신을 받았을 때 OS 설치 이후 수행하는 전체 초기화 절차입니다.
+> 스토리지 서버 세팅은 [README-initialize-storage.md](README-initialize-storage.md)를 참고하세요.
 
 ---
 
@@ -164,22 +165,90 @@ sudo /opt/mlops/teamctl-xfs.sh set-gpu-mode 4
 
 ---
 
-## 7. 팀 생성 및 컨테이너 기동
+## 7. NFS 스토리지 연결
 
-### 7.1 팀 생성
+> **전제:** 스토리지 서버([README-initialize-storage.md](README-initialize-storage.md))가 이미 세팅되어 NFS export가 동작 중이어야 합니다.
+
+### 7.1 NFS 클라이언트 설치
 
 ```bash
-sudo /opt/mlops/teamctl-xfs.sh create team01 --gpu 0 --image mlops:latest --size 1000G --soft 950G
+sudo apt update
+sudo apt install -y nfs-common
 ```
 
-### 7.2 컨테이너 기동
+### 7.2 마운트 포인트 생성 + 마운트
+
+```bash
+sudo mkdir -p /mnt/nfs/teams
+sudo mount -t nfs4 210.125.91.94:/teams /mnt/nfs/teams
+df -h /mnt/nfs/teams
+```
+
+### 7.3 fstab 영구 마운트
+
+`/etc/fstab`에 추가:
+
+```
+210.125.91.94:/teams  /mnt/nfs/teams  nfs4  nfsvers=4.2,_netdev,hard,intr,timeo=600,retrans=2  0  0
+```
+
+적용:
+
+```bash
+sudo systemctl daemon-reload
+sudo mount -a
+```
+
+### 7.4 스토리지 서버 원격 제어용 SSH 키 생성
+
+teamctl-xfs.sh가 스토리지 서버의 nfsctl.sh를 SSH로 호출하기 위한 키입니다.
+
+```bash
+sudo mkdir -p /opt/mlops/keys
+sudo chmod 700 /opt/mlops/keys
+
+sudo ssh-keygen -t ed25519 -C "teamctl->nfsctl" -f /opt/mlops/keys/nfsctl_ed25519
+sudo chmod 600 /opt/mlops/keys/nfsctl_ed25519
+sudo chmod 644 /opt/mlops/keys/nfsctl_ed25519.pub
+```
+
+공개키 확인 후 스토리지 서버의 `nfsadmin` 계정에 등록합니다. (자세한 절차는 [README-initialize-storage.md](README-initialize-storage.md) 참고)
+
+```bash
+sudo cat /opt/mlops/keys/nfsctl_ed25519.pub
+```
+
+### 7.5 원격 연결 테스트
+
+```bash
+sudo ssh -i /opt/mlops/keys/nfsctl_ed25519 \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=accept-new \
+  nfsadmin@210.125.91.94 "sudo /opt/nfs/nfsctl.sh audit"
+```
+
+---
+
+## 8. 팀 생성 및 컨테이너 기동
+
+### 8.1 팀 생성 (로컬 + NFS 통합)
+
+```bash
+sudo /opt/mlops/teamctl-xfs.sh create team01 \
+  --gpu 0 \
+  --image jangminnature/mlops:dept-20260208 \
+  --size 300G --soft 290G \
+  --nfs --nfs-size 2000G --nfs-soft 1950G
+```
+
+### 8.2 컨테이너 기동
 
 ```bash
 sudo docker compose -f /opt/mlops/compose.yaml up -d team01
 sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 ```
 
-### 7.3 검증
+### 8.3 검증
 
 ```bash
 sudo xfs_quota -x -c "report -p -n" /data | head -n 20
@@ -189,9 +258,9 @@ sudo /opt/mlops/teamctl-xfs.sh audit
 
 ---
 
-## 8. 모니터링 대시보드 설정
+## 9. 모니터링 대시보드 설정
 
-### 8.1 소스 배포 및 기동
+### 9.1 소스 배포 및 기동
 
 ```bash
 sudo cp -r ~/work/my_dockers/dept-mlops/monitoring/ /opt/
@@ -200,7 +269,7 @@ sudo docker compose up -d
 sudo docker compose ps
 ```
 
-### 8.2 Grafana 설정
+### 9.2 Grafana 설정
 
 접속: `http://<서버IP>:3000/`
 
@@ -216,7 +285,7 @@ sudo docker compose ps
 | Docker (cAdvisor) | `13946` | 소스: Prometheus 선택 |
 | NVIDIA DCGM Exporter | `12239` | 소스: Prometheus 선택 |
 
-### 8.3 Prometheus
+### 9.3 Prometheus
 
 접속: `http://<서버IP>:9090/`
 
@@ -232,6 +301,8 @@ sudo docker compose ps
 - [ ] `teamctl-xfs.sh` 및 관련 파일 `/opt/mlops/`에 배포
 - [ ] Docker 이미지 빌드
 - [ ] GPU 모드 설정 (`set-gpu-mode`)
-- [ ] 팀 생성 + 컨테이너 기동 + audit 검증
+- [ ] NFS 클라이언트 설치 + `/mnt/nfs/teams` 마운트 + fstab 등록
+- [ ] 스토리지 서버 원격 제어용 SSH 키 생성 + 등록 + 연결 테스트
+- [ ] 팀 생성 (`--nfs` 포함) + 컨테이너 기동 + audit 검증
 - [ ] 모니터링 스택 기동 (Grafana + Prometheus)
 - [ ] Grafana 대시보드 Import (1860, 13946, 12239)
