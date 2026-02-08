@@ -397,6 +397,23 @@ ensure_team_nfs_remote(){
            sudo ${NFSCTL_REMOTE_PATH} create ${team} --uid ${uid} --gid ${gid} --soft ${soft} --hard ${hard}"
 }
 
+ensure_team_nfs_remote_remove(){
+  # remove mapping/quota on storage server, optional purge dir
+  local team="$1" purge_dir="$2"   # purge_dir: true|false
+  ensure_remote_nfsctl
+
+  local cmd="sudo ${NFSCTL_REMOTE_PATH} remove ${team}"
+  if [[ "${purge_dir}" == "true" ]]; then
+    cmd="${cmd} --purge-dir"
+  fi
+
+  # nfsctl.sh remove는 idempotent하게 만들었지만, 실패해도 로컬 삭제는 계속 진행할 수 있게
+  ssh_nfs "${cmd}" || {
+    echo "WARN: remote NFS remove failed for ${team} (continuing)."
+    return 0
+  }
+}
+
 # -------------------------
 # Team storage (local XFS quota + perms)
 # -------------------------
@@ -487,7 +504,8 @@ Core:
   sudo $0 resize TEAM --size 500G [--soft 490G]              (LOCAL quota only)
   sudo $0 nfs-resize TEAM --nfs-size 1000G [--nfs-soft 950G] (NFS quota only)
   sudo $0 reset TEAM
-  sudo $0 remove TEAM [--purge-data]
+  sudo $0 remove TEAM [--purge-data] [--purge-nfs] [--purge-nfs-dir] \
+    [--nfs-host HOST] [--nfs-user USER] [--nfs-port 22] [--nfs-key /path/to/key] [--nfsctl /opt/nfs/nfsctl.sh]
   sudo $0 set-image TEAM image:tag
 
 Storage model:
@@ -887,41 +905,95 @@ cmd_remove(){
   [[ -n "${team}" ]] || die "TEAM_NAME required."
   compose_has_team "${team}" || die "Team not found: ${team}"
 
+  # new options
   local purge="false"
+  local purge_nfs="false"
+  local purge_nfs_dir="false"
+
+  # remote NFS options (allow override on remove too)
+  local nfs_host="${NFS_HOST_DEFAULT}"
+  local nfs_user="${NFS_SSH_USER_DEFAULT}"
+  local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
+  local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
+  local nfs_mount="${NFS_MOUNT_DEFAULT}"
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --purge-data) purge="true"; shift 1;;
+      --purge-nfs) purge_nfs="true"; shift 1;;
+      --purge-nfs-dir) purge_nfs_dir="true"; shift 1;;
+
+      --nfs-host) nfs_host="${2:-}"; shift 2;;
+      --nfs-user) nfs_user="${2:-}"; shift 2;;
+      --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
+      --nfsctl) nfsctl="${2:-}"; shift 2;;
+      --nfs-mount) nfs_mount="${2:-}"; shift 2;;
+
       *) die "Unknown arg: $1";;
     esac
   done
 
+  # container stop/rm
   docker compose -f "${COMPOSE_FILE}" stop "${team}" >/dev/null 2>&1 || true
   docker compose -f "${COMPOSE_FILE}" rm -s -f "${team}" >/dev/null 2>&1 || true
 
+  # get env before removing compose block
   local uid gid port gpu
   read -r uid gid port gpu <<< "$(get_team_env_from_compose "${team}")"
 
+  # remove from compose
   compose_remove_team "${team}"
   log "Removed ${team} from compose."
 
+  # Optionally purge local data
   if [[ "${purge}" == "true" ]]; then
+    # backup authorized_keys
     if [[ -f "${SSH_DIR}/${team}/authorized_keys" ]]; then
       backup_keys "${team}" "${SSH_BACKUP_DIR}" || true
     fi
 
+    # remove local XFS quota mapping + data
     if [[ -n "${gid:-}" ]]; then
       purge_team_xfs_project "${team}" "${gid}" || true
     fi
-
     rm -rf "${TEAMS_DIR:?}/${team}" || true
     rm -rf "${SSH_DIR:?}/${team}" || true
     log "Purged LOCAL data for ${team}."
-    log "NOTE: NFS data is NOT deleted automatically."
   else
-    log "Data preserved:"
+    log "Local data preserved (use --purge-data to delete local):"
     log "- local workspace: ${TEAMS_DIR}/${team}"
     log "- ssh keys:        ${SSH_DIR}/${team}"
-    log "To purge everything local: sudo $0 remove ${team} --purge-data"
+  fi
+
+  # Optionally purge NFS remotely (mapping/quota, optionally dir)
+  # NOTE: This runs only when user explicitly asks (--purge-nfs), regardless of --purge-data.
+  if [[ "${purge_nfs}" == "true" ]]; then
+    # set remote context
+    NFS_ENABLED="true"
+    NFS_HOST="${nfs_host}"
+    NFS_SSH_USER="${nfs_user}"
+    NFS_SSH_PORT="${nfs_port}"
+    NFS_SSH_KEY="${nfs_key}"
+    NFSCTL_REMOTE_PATH="${nfsctl}"
+    NFS_MOUNT="${nfs_mount}"
+
+    # If user asked to delete NFS dir too, ensure mount exists (helps avoid surprises) but still allow remote remove.
+    if mountpoint -q "${NFS_MOUNT}" 2>/dev/null; then
+      log "Host NFS mount OK: ${NFS_MOUNT}"
+    else
+      log "WARN: Host NFS mount not detected at ${NFS_MOUNT} (continuing remote remove anyway)."
+    fi
+
+    ensure_team_nfs_remote_remove "${team}" "${purge_nfs_dir}"
+    if [[ "${purge_nfs_dir}" == "true" ]]; then
+      log "Purged NFS mapping/quota + directory for ${team} (remote)."
+    else
+      log "Purged NFS mapping/quota for ${team} (remote). Directory preserved."
+    fi
+  else
+    log "NFS preserved (use --purge-nfs to remove NFS quota/mapping; add --purge-nfs-dir to delete NFS dir)."
   fi
 }
 
