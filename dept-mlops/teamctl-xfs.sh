@@ -2,19 +2,44 @@
 set -euo pipefail
 
 # =========================
-# teamctl-xfs.sh (FINAL)
-# - XFS project quota based team workspace management
-# - /workspace and /home/<team> share the same quota-controlled volume
+# teamctl-xfs.sh (FINAL + Remote NFS quota + NFS bind mount)
+# - Local workspace: XFS project quota on GPU server (/data)
+# - Optional NFS workspace: created+quota via remote nfsctl on storage server, mounted on host, bind-mounted into container
+#
+# Local (GPU server):
+#   - DATA_ROOT=/data must be XFS mounted with prjquota
+#   - /workspace and /home/<team> share the same local quota-controlled dir
+#
+# NFS:
+#   - Storage server has /opt/nfs/nfsctl.sh (project quota on /nfs)
+#   - GPU server already mounts storage NFS at: NFS_MOUNT=/mnt/nfs/teams
+#   - Team dir on host: /mnt/nfs/teams/<team>
+#   - Inside container: /nfs/team (read-write)
+#
+# IMPORTANT:
+# - Local quota (/data) and NFS quota are independent and can differ.
 # =========================
 
 BASE_DIR="/opt/mlops"
 COMPOSE_FILE="${BASE_DIR}/compose.yaml"
 GPU_MODE_FILE="${BASE_DIR}/.gpu_mode"
 
+# ---- Local storage (XFS prjquota) ----
 DATA_ROOT="/data"               # must be XFS mounted with prjquota
 TEAMS_DIR="${DATA_ROOT}/teams"
 SSH_DIR="${DATA_ROOT}/ssh"
 SSH_BACKUP_DIR="${DATA_ROOT}/ssh_backups"
+
+# ---- NFS bind mount (host already mounted) ----
+NFS_MOUNT_DEFAULT="/mnt/nfs/teams"      # host mount point (already mounted)
+NFS_CONTAINER_PATH_DEFAULT="/nfs/team"  # inside container
+
+# ---- Remote NFS quota controller (storage server) ----
+NFS_HOST_DEFAULT="210.125.91.94"
+NFS_SSH_USER_DEFAULT="nfsadmin"
+NFS_SSH_PORT_DEFAULT="22"
+NFS_SSH_KEY_DEFAULT="/opt/mlops/keys/nfsctl_ed25519"
+NFSCTL_REMOTE_PATH_DEFAULT="/opt/nfs/nfsctl.sh"
 
 PROJECTS_FILE="/etc/projects"
 PROJID_FILE="/etc/projid"
@@ -38,6 +63,10 @@ die(){ echo "ERROR: $*" >&2; exit 1; }
 
 need_root(){
   [[ "$(id -u)" -eq 0 ]] || die "Run as root (sudo)."
+}
+
+need_cmd(){
+  command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"
 }
 
 ensure_dirs(){
@@ -215,13 +244,8 @@ ensure_team_hostkeys_dir() {
   local hk_dir="${SSH_DIR}/${team}/hostkeys"
 
   mkdir -p "${hk_dir}"
-
-  # ssh host keys는 root만 쓰는 게 정석
   chown root:root "${hk_dir}"
   chmod 700 "${hk_dir}"
-
-  # (선택) authorized_keys는 팀 gid로 쓰는 구조라면 기존 로직 유지
-  # hostkeys는 root만 접근하는 게 좋다.
 }
 
 fix_team_ssh_perms(){
@@ -267,7 +291,7 @@ backup_keys(){
 }
 
 # -------------------------
-# XFS project quota
+# XFS project quota (local)
 # -------------------------
 ensure_xfs_prjquota(){
   command -v xfs_quota >/dev/null 2>&1 || die "xfs_quota not found. Install xfsprogs."
@@ -330,7 +354,68 @@ purge_team_xfs_project(){
 }
 
 # -------------------------
-# Team storage (XFS quota + perms)
+# NFS (host mount) checks
+# -------------------------
+ensure_nfs_mount(){
+  [[ "${NFS_ENABLED}" == "true" ]] || return 0
+  [[ -d "${NFS_MOUNT}" ]] || die "NFS_MOUNT not found: ${NFS_MOUNT}"
+  mountpoint -q "${NFS_MOUNT}" || die "NFS_MOUNT is not a mountpoint: ${NFS_MOUNT}"
+}
+
+# -------------------------
+# Remote NFS quota (storage server via ssh)
+# -------------------------
+ssh_nfs(){
+  local cmd="$1"
+  need_cmd ssh
+  local key_opt=()
+  if [[ -n "${NFS_SSH_KEY:-}" ]]; then
+    key_opt=(-i "${NFS_SSH_KEY}")
+  fi
+
+  ssh -p "${NFS_SSH_PORT}" \
+    "${key_opt[@]}" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o ConnectTimeout=5 \
+    "${NFS_SSH_USER}@${NFS_HOST}" \
+    "${cmd}"
+}
+
+ensure_remote_nfsctl(){
+  ssh_nfs "test -x ${NFSCTL_REMOTE_PATH} || { echo 'no nfsctl: ${NFSCTL_REMOTE_PATH}'; exit 2; }"
+}
+
+ensure_team_nfs_remote(){
+  # idempotent: if team exists -> resize, else create
+  local team="$1" uid="$2" gid="$3" soft="$4" hard="$5"
+  ensure_nfs_mount
+  ensure_remote_nfsctl
+
+  ssh_nfs "sudo ${NFSCTL_REMOTE_PATH} who ${team} >/dev/null 2>&1 && \
+           sudo ${NFSCTL_REMOTE_PATH} resize ${team} --soft ${soft} --hard ${hard} || \
+           sudo ${NFSCTL_REMOTE_PATH} create ${team} --uid ${uid} --gid ${gid} --soft ${soft} --hard ${hard}"
+}
+
+ensure_team_nfs_remote_remove(){
+  # remove mapping/quota on storage server, optional purge dir
+  local team="$1" purge_dir="$2"   # purge_dir: true|false
+  ensure_remote_nfsctl
+
+  local cmd="sudo ${NFSCTL_REMOTE_PATH} remove ${team}"
+  if [[ "${purge_dir}" == "true" ]]; then
+    cmd="${cmd} --purge-dir"
+  fi
+
+  # nfsctl.sh remove는 idempotent하게 만들었지만, 실패해도 로컬 삭제는 계속 진행할 수 있게
+  ssh_nfs "${cmd}" || {
+    echo "WARN: remote NFS remove failed for ${team} (continuing)."
+    return 0
+  }
+}
+
+# -------------------------
+# Team storage (local XFS quota + perms)
 # -------------------------
 prepare_team_storage(){
   local team="$1" uid="$2" gid="$3"
@@ -350,12 +435,18 @@ prepare_team_storage(){
 
 # -------------------------
 # Compose team block generator
-# IMPORTANT: /home/<team> is mapped to the same volume as /workspace
+# - /home/<team> shares same local volume as /workspace (local quota)
+# - Optional NFS: /mnt/nfs/teams/<team> -> /nfs/team:rw
 # -------------------------
 render_team_block(){
   local team="$1" image="$2" gpu="$3" port="$4" uid="$5" gid="$6"
   local shm="${DEFAULT_SHM_SIZE}"
   local ipc="${DEFAULT_IPC}"
+
+  local nfs_line=""
+  if [[ "${NFS_ENABLED}" == "true" ]]; then
+    nfs_line="      - ${NFS_MOUNT}/${team}:${NFS_CONTAINER_PATH}:rw"
+  fi
 
   cat <<YAML
   ${team}:
@@ -369,6 +460,7 @@ render_team_block(){
       - ${TEAMS_DIR}/${team}:/home/${team}
       - ${SSH_DIR}/${team}:/ssh-keys:ro
       - ${SSH_DIR}/${team}/hostkeys:/etc/ssh/hostkeys:rw
+${nfs_line}
     environment:
       USER_NAME: ${team}
       PUID: "${uid}"
@@ -399,21 +491,29 @@ Usage: sudo $0 <command> [args...]
 
 Core:
   sudo $0 set-gpu-mode 4|8
-  sudo $0 create TEAM_NAME --gpu N [--image IMG] [--port P] [--uid U] [--gid G] [--size 300G] [--soft 290G]
-  sudo $0 add-key TEAM_NAME --key "ssh-ed25519 AAAA... team01/user"
-  sudo $0 fix-perms TEAM_NAME
+  sudo $0 create TEAM --gpu N [--image IMG] [--port P] [--uid U] [--gid G] \
+    [--size 300G] [--soft 290G] \
+    [--nfs] [--nfs-size 1000G] [--nfs-soft 950G] \
+    [--nfs-host HOST] [--nfs-user USER] [--nfs-port 22] [--nfs-key /path/to/key] [--nfsctl /opt/nfs/nfsctl.sh] \
+    [--nfs-mount /mnt/nfs/teams] [--nfs-path /nfs/team]
+  sudo $0 add-key TEAM --key "ssh-ed25519 AAAA... team01/user"
+  sudo $0 fix-perms TEAM
   sudo $0 audit
   sudo $0 list-mounts
-  sudo $0 backup-keys TEAM_NAME [--out DIR]
-  sudo $0 resize TEAM_NAME --size 500G [--soft 490G]
-  sudo $0 reset TEAM_NAME
-  sudo $0 remove TEAM_NAME [--purge-data]
-  sudo $0 set-image TEAM_NAME image:tag
+  sudo $0 backup-keys TEAM [--out DIR]
+  sudo $0 resize TEAM --size 500G [--soft 490G]              (LOCAL quota only)
+  sudo $0 nfs-resize TEAM --nfs-size 1000G [--nfs-soft 950G] (NFS quota only)
+  sudo $0 reset TEAM
+  sudo $0 remove TEAM [--purge-data] [--purge-nfs] [--purge-nfs-dir] \
+    [--nfs-host HOST] [--nfs-user USER] [--nfs-port 22] [--nfs-key /path/to/key] [--nfsctl /opt/nfs/nfsctl.sh]
+  sudo $0 set-image TEAM image:tag
 
-Notes:
-- Requires /data to be XFS mounted with prjquota (fstab option: prjquota).
-- Compose file is ${COMPOSE_FILE}
-- /home/<team> shares the same volume as /workspace (quota applies to both).
+Storage model:
+- Local quota: ${DATA_ROOT} (XFS + prjquota). Team local dir: ${TEAMS_DIR}/<team>
+  - Container: /workspace and /home/<team> share the same local dir (same local quota)
+- NFS (optional): storage server quota + host mount ${NFS_MOUNT_DEFAULT}/<team> -> container ${NFS_CONTAINER_PATH_DEFAULT}
+  - NFS quota is independent from local quota.
+
 EOF
 }
 
@@ -437,6 +537,17 @@ cmd_create(){
   local gpu="" image="${DEFAULT_IMAGE}" port="" uid="" gid=""
   local size="${DEFAULT_TEAM_HARD}" soft="${DEFAULT_TEAM_SOFT}"
 
+  # NFS flags/options
+  local nfs="false"
+  local nfs_size="" nfs_soft=""
+  local nfs_host="${NFS_HOST_DEFAULT}"
+  local nfs_user="${NFS_SSH_USER_DEFAULT}"
+  local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
+  local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
+  local nfs_mount="${NFS_MOUNT_DEFAULT}"
+  local nfs_path="${NFS_CONTAINER_PATH_DEFAULT}"
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --gpu) gpu="${2:-}"; shift 2;;
@@ -446,6 +557,18 @@ cmd_create(){
       --gid) gid="${2:-}"; shift 2;;
       --size) size="${2:-}"; shift 2;;
       --soft) soft="${2:-}"; shift 2;;
+
+      --nfs) nfs="true"; shift 1;;
+      --nfs-size) nfs_size="${2:-}"; shift 2;;
+      --nfs-soft) nfs_soft="${2:-}"; shift 2;;
+      --nfs-host) nfs_host="${2:-}"; shift 2;;
+      --nfs-user) nfs_user="${2:-}"; shift 2;;
+      --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
+      --nfsctl) nfsctl="${2:-}"; shift 2;;
+      --nfs-mount) nfs_mount="${2:-}"; shift 2;;
+      --nfs-path) nfs_path="${2:-}"; shift 2;;
+
       *) die "Unknown arg: $1";;
     esac
   done
@@ -468,18 +591,96 @@ cmd_create(){
   [[ "${gid}" =~ ^[0-9]+$ ]] || die "GID must be numeric."
   [[ "${port}" =~ ^[0-9]+$ ]] || die "Port must be numeric."
 
+  # Local quota workspace
   prepare_team_storage "${team}" "${uid}" "${gid}" "${size}" "${soft}"
+
+  # SSH dirs
   ensure_team_ssh_dir "${team}" "${gid}"
   ensure_team_hostkeys_dir "${team}"
+
+  # NFS settings (only if --nfs)
+  if [[ "${nfs}" == "true" ]]; then
+    NFS_ENABLED="true"
+    NFS_HOST="${nfs_host}"
+    NFS_SSH_USER="${nfs_user}"
+    NFS_SSH_PORT="${nfs_port}"
+    NFS_SSH_KEY="${nfs_key}"
+    NFSCTL_REMOTE_PATH="${nfsctl}"
+    NFS_MOUNT="${nfs_mount}"
+    NFS_CONTAINER_PATH="${nfs_path}"
+
+    # if not provided, default to local quota values
+    nfs_size="${nfs_size:-${size}}"
+    nfs_soft="${nfs_soft:-${soft}}"
+
+    ensure_team_nfs_remote "${team}" "${uid}" "${gid}" "${nfs_soft}" "${nfs_size}"
+  else
+    NFS_ENABLED="false"
+    NFS_MOUNT="${nfs_mount}"
+    NFS_CONTAINER_PATH="${nfs_path}"
+  fi
 
   local block
   block="$(render_team_block "${team}" "${image}" "${gpu}" "${port}" "${uid}" "${gid}")"
   compose_append_team_block "${block}"
 
-  log "Created team ${team}: gpu=${gpu}, port=${port}, uid=${uid}, gid=${gid}, soft=${soft}, hard=${size}"
-  log "Workspace: ${TEAMS_DIR}/${team}  (also mounted to /home/${team})"
-  log "SSH keys:  ${SSH_DIR}/${team}/authorized_keys"
+  log "Created team ${team}: gpu=${gpu}, port=${port}, uid=${uid}, gid=${gid}"
+  log "Local quota: soft=${soft} hard=${size}  dir=${TEAMS_DIR}/${team}  (container: /workspace + /home/${team})"
+  if [[ "${NFS_ENABLED}" == "true" ]]; then
+    log "NFS quota:   soft=${nfs_soft} hard=${nfs_size}  host=${NFS_MOUNT}/${team}  (container: ${NFS_CONTAINER_PATH})"
+    log "NFS remote:  ${NFS_SSH_USER}@${NFS_HOST}:${NFSCTL_REMOTE_PATH}"
+  fi
+  log "SSH keys:    ${SSH_DIR}/${team}/authorized_keys"
   log "Next: docker compose -f ${COMPOSE_FILE} up -d ${team}"
+}
+
+cmd_nfs_resize(){
+  need_root
+  ensure_dirs
+  need_compose
+
+  local team="${1:-}"; shift || true
+  [[ -n "${team}" ]] || die "TEAM_NAME required."
+  compose_has_team "${team}" || die "Team not found in compose: ${team}"
+
+  local nfs_size="" nfs_soft=""
+  local nfs_host="${NFS_HOST_DEFAULT}"
+  local nfs_user="${NFS_SSH_USER_DEFAULT}"
+  local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
+  local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
+  local nfs_mount="${NFS_MOUNT_DEFAULT}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --nfs-size) nfs_size="${2:-}"; shift 2;;
+      --nfs-soft) nfs_soft="${2:-}"; shift 2;;
+      --nfs-host) nfs_host="${2:-}"; shift 2;;
+      --nfs-user) nfs_user="${2:-}"; shift 2;;
+      --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
+      --nfsctl) nfsctl="${2:-}"; shift 2;;
+      --nfs-mount) nfs_mount="${2:-}"; shift 2;;
+      *) die "Unknown arg: $1";;
+    esac
+  done
+
+  [[ -n "${nfs_size}" ]] || die "--nfs-size NEW_SIZE required (e.g., 1000G)."
+  [[ -n "${nfs_soft}" ]] || nfs_soft="${nfs_size}"
+
+  read -r uid gid port gpu <<< "$(get_team_env_from_compose "${team}")"
+  [[ -n "${uid}" && -n "${gid}" ]] || die "Could not determine UID/GID from compose."
+
+  NFS_ENABLED="true"
+  NFS_HOST="${nfs_host}"
+  NFS_SSH_USER="${nfs_user}"
+  NFS_SSH_PORT="${nfs_port}"
+  NFS_SSH_KEY="${nfs_key}"
+  NFSCTL_REMOTE_PATH="${nfsctl}"
+  NFS_MOUNT="${nfs_mount}"
+
+  ensure_team_nfs_remote "${team}" "${uid}" "${gid}" "${nfs_soft}" "${nfs_size}"
+  log "NFS quota updated for ${team}: soft=${nfs_soft} hard=${nfs_size}"
 }
 
 cmd_add_key(){
@@ -546,11 +747,12 @@ cmd_list_mounts(){
   need_compose
 
   log "== teamctl list-mounts =="
-  log "- Data root: ${DATA_ROOT}"
-  log "- Teams dir: ${TEAMS_DIR}"
+  log "- Local data root: ${DATA_ROOT}"
+  log "- Local teams dir: ${TEAMS_DIR}"
+  log "- NFS mount (host): ${NFS_MOUNT_DEFAULT} (if enabled per team via --nfs)"
   echo ""
 
-  printf "%-10s %-28s %-8s %-8s %-8s %-8s\n" "TEAM" "PATH" "SIZE" "USED" "AVAIL" "USE%"
+  printf "%-10s %-28s %-8s %-8s %-8s %-8s\n" "TEAM" "LOCAL_PATH" "SIZE" "USED" "AVAIL" "USE%"
   printf "%-10s %-28s %-8s %-8s %-8s %-8s\n" "----------" "----------------------------" "--------" "--------" "--------" "--------"
 
   local teams
@@ -586,6 +788,8 @@ cmd_audit(){
   log "== teamctl audit =="
   log "- GPU mode: $(get_gpu_mode) (file: ${GPU_MODE_FILE})"
   log "- Compose: ${COMPOSE_FILE}"
+  log "- Local:  ${TEAMS_DIR} (quota via XFS prjquota on ${DATA_ROOT})"
+  log "- NFS host mount: ${NFS_MOUNT_DEFAULT} (per-team enabled via --nfs)"
   echo ""
 
   printf "%-8s %-4s %-6s %-6s %-6s %-10s %-6s %-s\n" "TEAM" "GPU" "PORT" "UID" "GID" "SSH_DIR_OK" "AK_OK" "NOTES"
@@ -621,6 +825,13 @@ cmd_audit(){
     if [[ "${dperm}" != "750" ]]; then notes+="SSH_DIR_PERM(${dperm}) "; fi
     if [[ "${fperm}" != "640" ]]; then notes+="AK_PERM(${fperm}) "; fi
 
+    # NFS dir existence check (host side)
+    if mountpoint -q "${NFS_MOUNT_DEFAULT}" 2>/dev/null; then
+      [[ -d "${NFS_MOUNT_DEFAULT}/${team}" ]] || notes+="NFS_DIR_MISSING "
+    else
+      notes+="NFS_NOT_MOUNTED "
+    fi
+
     printf "%-8s %-4s %-6s %-6s %-6s %-10s %-6s %-s\n" \
       "${team}" "${gpu:-?}" "${port:-?}" "${uid:-?}" "${gid:-?}" "${ssh_ok}" "${ak_ok}" "${notes}"
   done <<< "${teams}"
@@ -628,7 +839,8 @@ cmd_audit(){
   echo ""
   echo "Tips:"
   echo "- Fix perms: sudo $0 fix-perms TEAM"
-  echo "- Show quota: sudo xfs_quota -x -c 'report -p -n' ${DATA_ROOT}"
+  echo "- Local quota report: sudo xfs_quota -x -c 'report -p -n' ${DATA_ROOT}"
+  echo "- NFS per team (host): ${NFS_MOUNT_DEFAULT}/<team>  (container: ${NFS_CONTAINER_PATH_DEFAULT})"
 }
 
 cmd_resize(){
@@ -664,8 +876,9 @@ cmd_resize(){
   fi
 
   set_team_quota "${team}" "${soft}" "${size}"
-  log "Quota updated for ${team}: soft=${soft} hard=${size}"
+  log "Local quota updated for ${team}: soft=${soft} hard=${size}"
   report_team_quota "${team}"
+  log "NOTE: This changes LOCAL quota only. Use '$0 nfs-resize' for NFS quota."
 }
 
 cmd_reset(){
@@ -692,40 +905,95 @@ cmd_remove(){
   [[ -n "${team}" ]] || die "TEAM_NAME required."
   compose_has_team "${team}" || die "Team not found: ${team}"
 
+  # new options
   local purge="false"
+  local purge_nfs="false"
+  local purge_nfs_dir="false"
+
+  # remote NFS options (allow override on remove too)
+  local nfs_host="${NFS_HOST_DEFAULT}"
+  local nfs_user="${NFS_SSH_USER_DEFAULT}"
+  local nfs_port="${NFS_SSH_PORT_DEFAULT}"
+  local nfs_key="${NFS_SSH_KEY_DEFAULT}"
+  local nfsctl="${NFSCTL_REMOTE_PATH_DEFAULT}"
+  local nfs_mount="${NFS_MOUNT_DEFAULT}"
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --purge-data) purge="true"; shift 1;;
+      --purge-nfs) purge_nfs="true"; shift 1;;
+      --purge-nfs-dir) purge_nfs_dir="true"; shift 1;;
+
+      --nfs-host) nfs_host="${2:-}"; shift 2;;
+      --nfs-user) nfs_user="${2:-}"; shift 2;;
+      --nfs-port) nfs_port="${2:-}"; shift 2;;
+      --nfs-key) nfs_key="${2:-}"; shift 2;;
+      --nfsctl) nfsctl="${2:-}"; shift 2;;
+      --nfs-mount) nfs_mount="${2:-}"; shift 2;;
+
       *) die "Unknown arg: $1";;
     esac
   done
 
+  # container stop/rm
   docker compose -f "${COMPOSE_FILE}" stop "${team}" >/dev/null 2>&1 || true
   docker compose -f "${COMPOSE_FILE}" rm -s -f "${team}" >/dev/null 2>&1 || true
 
+  # get env before removing compose block
   local uid gid port gpu
   read -r uid gid port gpu <<< "$(get_team_env_from_compose "${team}")"
 
+  # remove from compose
   compose_remove_team "${team}"
   log "Removed ${team} from compose."
 
+  # Optionally purge local data
   if [[ "${purge}" == "true" ]]; then
+    # backup authorized_keys
     if [[ -f "${SSH_DIR}/${team}/authorized_keys" ]]; then
       backup_keys "${team}" "${SSH_BACKUP_DIR}" || true
     fi
 
+    # remove local XFS quota mapping + data
     if [[ -n "${gid:-}" ]]; then
       purge_team_xfs_project "${team}" "${gid}" || true
     fi
-
     rm -rf "${TEAMS_DIR:?}/${team}" || true
     rm -rf "${SSH_DIR:?}/${team}" || true
-    log "Purged data for ${team}."
+    log "Purged LOCAL data for ${team}."
   else
-    log "Data preserved:"
-    log "- workspace: ${TEAMS_DIR}/${team}"
-    log "- ssh keys:  ${SSH_DIR}/${team}"
-    log "To purge everything: sudo $0 remove ${team} --purge-data"
+    log "Local data preserved (use --purge-data to delete local):"
+    log "- local workspace: ${TEAMS_DIR}/${team}"
+    log "- ssh keys:        ${SSH_DIR}/${team}"
+  fi
+
+  # Optionally purge NFS remotely (mapping/quota, optionally dir)
+  # NOTE: This runs only when user explicitly asks (--purge-nfs), regardless of --purge-data.
+  if [[ "${purge_nfs}" == "true" ]]; then
+    # set remote context
+    NFS_ENABLED="true"
+    NFS_HOST="${nfs_host}"
+    NFS_SSH_USER="${nfs_user}"
+    NFS_SSH_PORT="${nfs_port}"
+    NFS_SSH_KEY="${nfs_key}"
+    NFSCTL_REMOTE_PATH="${nfsctl}"
+    NFS_MOUNT="${nfs_mount}"
+
+    # If user asked to delete NFS dir too, ensure mount exists (helps avoid surprises) but still allow remote remove.
+    if mountpoint -q "${NFS_MOUNT}" 2>/dev/null; then
+      log "Host NFS mount OK: ${NFS_MOUNT}"
+    else
+      log "WARN: Host NFS mount not detected at ${NFS_MOUNT} (continuing remote remove anyway)."
+    fi
+
+    ensure_team_nfs_remote_remove "${team}" "${purge_nfs_dir}"
+    if [[ "${purge_nfs_dir}" == "true" ]]; then
+      log "Purged NFS mapping/quota + directory for ${team} (remote)."
+    else
+      log "Purged NFS mapping/quota for ${team} (remote). Directory preserved."
+    fi
+  else
+    log "NFS preserved (use --purge-nfs to remove NFS quota/mapping; add --purge-nfs-dir to delete NFS dir)."
   fi
 }
 
@@ -743,30 +1011,20 @@ cmd_set_image() {
     return 1
   fi
 
-  # Update only the `image:` line inside the target service block:
-  # services:
-  #   team01:
-  #     image: ...
-  #   team02:
-  #     image: ...
   local tmp
   tmp="$(mktemp)"
 
   awk -v TEAM="$team" -v NEWIMG="$image" '
     BEGIN { in_services=0; in_team=0; updated=0 }
 
-    # Enter services section
     /^services:[[:space:]]*$/ { in_services=1; print; next }
 
-    # If we are in services, detect service headers at indent=2: "  name:"
     in_services && match($0, /^[[:space:]]{2}([A-Za-z0-9_.-]+):[[:space:]]*$/, m) {
-      # leaving previous team block if any
       in_team = (m[1] == TEAM)
       print
       next
     }
 
-    # Replace image line at indent=4 inside target team block
     in_services && in_team && $0 ~ /^[[:space:]]{4}image:[[:space:]]*/ {
       print "    image: " NEWIMG
       updated=1
@@ -775,12 +1033,7 @@ cmd_set_image() {
 
     { print }
 
-    END {
-      if (updated == 0) {
-        # exit code 3: team block or image line not found
-        exit 3
-      }
-    }
+    END { if (updated == 0) exit 3 }
   ' "$compose" > "$tmp"
 
   local rc=$?
@@ -792,7 +1045,6 @@ cmd_set_image() {
   elif [[ $rc -eq 3 ]]; then
     rm -f "$tmp"
     echo "ERROR: Could not find service '${team}' or its image line in ${compose}"
-    echo "Tip: check that '${team}' exists under 'services:' and has an 'image:' line."
     return 1
   else
     rm -f "$tmp"
@@ -817,6 +1069,7 @@ main(){
     list-mounts) cmd_list_mounts;;
     backup-keys) cmd_backup_keys "$@";;
     resize) cmd_resize "$@";;
+    nfs-resize) cmd_nfs_resize "$@";;
     reset) cmd_reset "$@";;
     remove) cmd_remove "$@";;
     set-image) cmd_set_image "${1:-}" "${2:-}" ;;
